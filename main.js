@@ -69,16 +69,50 @@ function readStateFile() {
   }
 }
 
+const RELAY_URL = 'http://127.0.0.1:19998/state';
+
+async function fetchRelayState() {
+  try {
+    const resp = await net.fetch(RELAY_URL, { signal: AbortSignal.timeout(150) });
+    if (!resp.ok) return null;
+    return await resp.json();
+  } catch { return null; }
+}
+
 function startPolling() {
-  setInterval(() => {
+  setInterval(async () => {
+    const now = Date.now();
+
+    // Merge relay sessions into tracker (handles remote + multi-session keepalive)
+    const relayState = await fetchRelayState();
+    if (relayState?.sessions) {
+      const nowSec = now / 1000;
+      for (const [sid, s] of Object.entries(relayState.sessions)) {
+        if (!isValidSessionId(sid)) continue;
+        if (nowSec - (s.timestamp || 0) < HOT_MS / 1000) {
+          tracker.update(sid, now);
+          if (s.cwd) sessionCwds.set(sid, s.cwd);
+        }
+      }
+    }
+
+    // Always send session-update (relay may have changed tracker state)
+    if (win && !win.isDestroyed()) {
+      const sessions = buildSessionStates(tracker.entries(), now, HOT_MS, WARM_MS, 10);
+      const sessionsWithCwd = sessions.map(s => ({
+        ...s,
+        cwd: sessionCwds.get(s.id) || null,
+      }));
+      win.webContents.send('session-update', { sessions: sessionsWithCwd });
+    }
+
+    // Process local state file for new events + animations
     const state = readStateFile();
     if (!state || !state.last_active) return;
 
     const { timestamp, event, session_id, cwd } = state.last_active;
     if (timestamp === lastTimestamp) return;
     lastTimestamp = timestamp;
-
-    const now = Date.now();
 
     if (isValidSessionId(session_id)) {
       if (event === 'SessionEnd') {
@@ -93,9 +127,7 @@ function startPolling() {
           const isNew = !existing.some(([id]) => id === session_id);
           if (isNew && existing.length === 1) {
             const [oldId, oldTime] = existing[0];
-            if ((now - oldTime) < 5000) {
-              tracker.remove(oldId);
-            }
+            if ((now - oldTime) < 5000) tracker.remove(oldId);
           }
         }
         tracker.update(session_id, now);
@@ -106,15 +138,6 @@ function startPolling() {
       for (const id of sessionCwds.keys()) {
         if (!tracker.entries().some(([sid]) => sid === id)) sessionCwds.delete(id);
       }
-    }
-
-    if (win && !win.isDestroyed()) {
-      const sessions = buildSessionStates(tracker.entries(), now, HOT_MS, WARM_MS, 10);
-      const sessionsWithCwd = sessions.map(s => ({
-        ...s,
-        cwd: sessionCwds.get(s.id) || null,
-      }));
-      win.webContents.send('session-update', { sessions: sessionsWithCwd });
     }
 
     const anim = EVENT_TO_ANIM[event];
