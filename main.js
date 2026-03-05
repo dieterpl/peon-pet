@@ -73,7 +73,7 @@ function readStateFile() {
 
 async function readRemoteState(baseUrl) {
   try {
-    const res = await net.fetch(`${baseUrl}/state`);
+    const res = await net.fetch(`${baseUrl}/state`, { signal: AbortSignal.timeout(150) });
     if (!res.ok) return null;
     return res.json();
   } catch {
@@ -170,13 +170,11 @@ function syncRemoteSessionsToTracker(state) {
 
 function startPolling() {
   const cfg = loadPetConfig();
-  const remoteUrl = cfg.remoteUrl || null;
+  const remoteUrl = cfg.remoteUrl || 'http://127.0.0.1:19998';
 
   setInterval(async () => {
     processStateUpdate(readStateFile(), lastTimestamp, (ts) => { lastTimestamp = ts; });
-    if (remoteUrl) {
-      syncRemoteSessionsToTracker(await readRemoteState(remoteUrl));
-    }
+    syncRemoteSessionsToTracker(await readRemoteState(remoteUrl));
   }, 200);
 }
 
